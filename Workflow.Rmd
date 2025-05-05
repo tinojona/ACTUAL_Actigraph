@@ -1,0 +1,154 @@
+---
+title: "GGIR"
+author: "Tino Schneidewind"
+date: "2025-05-05"
+output: 
+  html_document: 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr); library(ggplot2)
+
+```
+
+### Aim of this document
+
+In this file I will present how to use the package GGIR to extract from Actigraph measurements the **validity, the sleep period and the activity**.
+
+#### 1. Run GGIR
+
+First we run GGIR. for this we need to define a directory where our RAW.csv file is located and a directory where our output will go. Running this for a new RAW.csv file takes approximately 15 minutes, therefore, we skip this here.
+
+```{r ggir}
+# GGIR(
+#   mode = c(1, 2, 3, 4, 5),              # Load data + do wear time detection
+#   datadir = datadir,                    # Filepath where the RAW.csv file is stored
+#   outputdir = outputdir,                # Where to save results
+# 
+#   dataformat = "csv",                   # For raw acceleration in CSV format
+#   csv.format = "actilife",              # Tell GGIR it's an ActiLife CSV
+#   csv.acc.col.acc = 2:4,                # Adjust if needed: columns for X, Y, Z
+#   csv.header = TRUE,                    # Set TRUE if your file has headers
+#   csv.time.col = 1,                     # Usually first column is timestamp
+#   csv.IDformat = 3,                     # Use filename to identify subject
+#   csv.col.names = TRUE,                 # Use column names from CSV
+# 
+#   do.cal = TRUE,                        # Calibration step (recommended)
+#   do.enmo = TRUE,                       # Calculate ENMO for wear detection (based on movement)
+#   strategy = 1,                         # Wear time detection strategy 
+# 
+#   do.part3.sleep.analysis = TRUE,       # Enable sleep analysis!
+# 
+#   epochvalues2csv = TRUE,               # Save epoch summary
+#   epochvalues2csv_minutes = 60,         # Save as hourly averages
+# 
+#   save_ms5rawlevels = TRUE,              # Save QC wear-time data
+#   save_ms5raw_format = "csv",
+# 
+#   part5_agg2_60seconds = TRUE           # aggregating of final time series table
+# )
+```
+
+<br>
+
+#### 2. Load the raw processed data
+
+The output directory includes many different datasets on sleep, activity, and other variables. However, most of them are saved as daily or person summaries. Because we are interested in also validating other data with sub daily intervals, we load here the raw data used to calculate these daily metrics from the /meta folder. From the Step 5 of GGIR, we load the following data that has been summarized to minute intervals.
+
+```{r ggir output}
+load("/Volumes/FS/_ISPM/CCH/Actual_Project/data-raw/Actigraph/test_tino_withParticipant2/output_raw/meta/ms5.outraw/40_100_400/ACT002R_week1_STM2D48230258 (2024-12-07)RAW_T5A5.RData")
+
+# mdat
+```
+
+
+```{r ggir output dplyr, echo=FALSE}
+mdat <-  mdat |>
+  
+  # unselect duplicate and empty columns
+  select(-timenum, -selfreported) |>
+  
+  # assign correct class
+  mutate(across(c(SleepPeriodTime,sibdetection, invalidepoch, guider, window, class_id), as.factor))
+```
+
+
+The variables of this dataset are the following: 
+
+- timestamp
+- invalidepoch: 0 for valid, 1 for invalid
+- invalid_columns: percentage of invalid data in the current window
+
+- ACC: acceleration, based on the ENMO calculation which is the default in GGIR. This enables the class selection in class_id
+
+- class_id: behavioural class (saved in the folder ms5.outraw): spt_sleep	0; spt_wake_IN	1; spt_wake_LIG	2; spt_wake_MOD	3; spt_wake_VIG	4; day_IN_unbt	5; day_LIG_unbt	6; day_MOD_unbt	7; day_VIG_unbt	8; day_MVPA_bts_10	9; day_MVPA_bts_5_10	10; day_MVPA_bts_1_5	11; day_IN_bts_30	12; day_IN_bts_20_30	13; day_IN_bts_10_20	14; day_LIG_bts_10	15; day_LIG_bts_5_10	16; day_LIG_bts_1_5	17
+
+- SleepPeriodTime: 0 for wake, 1 for sleep
+- sibdetection: 1 if sustained inactivity bout was detect, 2 if nap was detected (there are no naps in this example)
+
+- guider: number to indicate what guider type was used, where 1=sleeplog, 2=HDCZA, etc.
+- window: these correspond to which sleeponset-sleeponset window in the recording. So, in a recording of one week you may find window numbers 1, 2, 3, 4, 5 and 6.
+- angle: longitudinal axis 
+
+<br>
+
+#### 3. Data investigation
+
+Now lets visualize the data.
+
+<br>
+
+```{r plots, echo=FALSE, fig.width=11, fig.height=4, fig.align='center'}
+
+mdat$invalidepoch2 <- mdat$invalidepoch 
+mdat$invalidepoch2 <- factor(mdat$invalidepoch2, levels = c(0,1), labels = c("Valid", "Invalid"))
+
+# Example: summarize sleep periods into ranges
+sleep_periods <- mdat %>%
+  group_by(gr = cumsum(c(0, diff(SleepPeriodTime)) != 0)) %>%
+  summarize(
+    SleepPeriodTime = first(SleepPeriodTime),
+    start = min(timestamp),
+    end = max(timestamp)
+  ) %>%
+  filter(SleepPeriodTime == 1)  # Keep only sleep periods
+
+
+# Summarize sibdetection nap periods
+nap_periods <- mdat %>%
+  group_by(gr = cumsum(c(0, diff(sibdetection)) != 0)) %>%
+  summarize(
+    sibdetection = first(sibdetection),
+    start = min(timestamp),
+    end = max(timestamp)
+  ) %>%
+  filter(sibdetection == 2)
+
+
+# Plot
+ggplot(data = mdat, aes(x = timestamp)) +
+  # Sleep background
+  geom_rect(data = sleep_periods, inherit.aes = FALSE,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf),
+            fill = "gold", alpha = 0.2) +
+  # Nap background
+  geom_rect(data = nap_periods, inherit.aes = FALSE,
+            aes(xmin = start, xmax = end, ymin = -Inf, ymax = Inf),
+            fill = "skyblue", alpha = 0.8) +
+  # Main line plot
+  geom_line(aes(y = ACC, color = factor(invalidepoch2))) +
+  labs(color = "Epoch Status", title = "Movement and Validity", subtitle =  "with sleep periods in yellow + nap period in blue") +
+  theme_minimal()
+
+```
+
+
+<br>
+
+#### 4. Data aggregation to hourly values
+
+this issue needs to be discussed!
